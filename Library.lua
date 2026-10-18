@@ -1,6 +1,8 @@
 local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
 local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local GuiService = game:GetService("GuiService")
 
 local LocalPlayer = Players.LocalPlayer
 local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
@@ -37,6 +39,62 @@ local function CreateShadow(parent)
     shadow.SliceCenter = Rect.new(49, 49, 450, 450)
     shadow.Parent = parent
     return shadow
+end
+
+-- ฟังก์ชันเลื่อนแบบสมูท (Smooth Scrolling) ด้วย easing แบบ frame-rate independent
+local function SetupSmoothScroll(frame, axis)
+    axis = axis or "Y"
+    local current = frame.CanvasPosition[axis]
+    local target = current
+    local active = false
+
+    local function getMax()
+        if axis == "Y" then
+            return math.max(0, frame.AbsoluteCanvasSize.Y - frame.AbsoluteWindowSize.Y)
+        end
+        return math.max(0, frame.AbsoluteCanvasSize.X - frame.AbsoluteWindowSize.X)
+    end
+
+    UserInputService.InputChanged:Connect(function(input)
+        if input.UserInputType ~= Enum.UserInputType.MouseWheel then return end
+
+        local inset = GuiService:GetGuiInset()
+        local mouse = UserInputService:GetMouseLocation()
+        local mx = mouse.X - inset.X
+        local my = mouse.Y - inset.Y
+        local pos = frame.AbsolutePosition
+        local size = frame.AbsoluteSize
+
+        if mx < pos.X or mx > pos.X + size.X or my < pos.Y or my > pos.Y + size.Y then
+            return
+        end
+
+        if not active then
+            current = frame.CanvasPosition[axis]
+            target = current
+        end
+
+        target = math.clamp(target - (input.Position.Z * 48), 0, getMax())
+        active = true
+    end)
+
+    RunService.RenderStepped:Connect(function(dt)
+        if not active then return end
+
+        local alpha = 1 - math.exp(-dt * 16)
+        current = current + (target - current) * alpha
+
+        if math.abs(target - current) < 0.5 then
+            current = target
+            active = false
+        end
+
+        if axis == "Y" then
+            frame.CanvasPosition = Vector2.new(frame.CanvasPosition.X, current)
+        else
+            frame.CanvasPosition = Vector2.new(current, frame.CanvasPosition.Y)
+        end
+    end)
 end
 
 -- // CREATE WINDOW
@@ -173,6 +231,7 @@ function Library:CreateWindow(config)
     ContentHolder.Size = UDim2.new(1, -24, 1, -90)
     ContentHolder.Position = UDim2.new(0, 12, 0, 82)
     ContentHolder.BackgroundTransparency = 1
+    ContentHolder.ClipsDescendants = true
     ContentHolder.Parent = Main
 
     -- Window Dragging Logic
@@ -308,6 +367,16 @@ function Library:CreateWindow(config)
         Underline.Visible = false
         Underline.Parent = TabBtn
 
+        -- Container (CanvasGroup) สำหรับอนิเมชั่นเปลี่ยนแท็บ
+        local TabGroup = Instance.new("CanvasGroup")
+        TabGroup.Name = name .. "_Group"
+        TabGroup.Size = UDim2.new(1, 0, 1, 0)
+        TabGroup.Position = UDim2.new(0, 0, 0, 0)
+        TabGroup.BackgroundTransparency = 1
+        TabGroup.GroupTransparency = 1
+        TabGroup.Visible = false
+        TabGroup.Parent = ContentHolder
+
         -- Container สำหรับองค์ประกอบในแต่ละแท็บ
         local TabContent = Instance.new("ScrollingFrame")
         TabContent.Name = name .. "_Content"
@@ -315,8 +384,9 @@ function Library:CreateWindow(config)
         TabContent.BackgroundTransparency = 1
         TabContent.ScrollBarThickness = 3
         TabContent.ScrollBarImageColor3 = Color3.fromRGB(255, 43, 43)
-        TabContent.Visible = false
-        TabContent.Parent = ContentHolder
+        TabContent.Parent = TabGroup
+
+        SetupSmoothScroll(TabContent, "Y")
 
         local ContentLayout = Instance.new("UIListLayout")
         ContentLayout.SortOrder = Enum.SortOrder.LayoutOrder
@@ -331,22 +401,65 @@ function Library:CreateWindow(config)
             TabScroll.CanvasSize = UDim2.new(0, TabLayout.AbsoluteContentSize.X + 15, 0, 0)
         end)
 
-        local Tab = {Content = TabContent}
+        local Tab = {Content = TabContent, Group = TabGroup}
 
         local function Select()
-            for _, t in pairs(Window.Tabs) do
-                t.Button.TextColor3 = Color3.fromRGB(150, 40, 40)
-                t.Underline.Visible = false
-                t.Content.Visible = false
-            end
-            TabBtn.TextColor3 = Color3.fromRGB(255, 43, 43)
-            Underline.Visible = true
-            TabContent.Visible = true
+            if Window.ActiveTab == Tab then return end
             Window.ActiveTab = Tab
+
+            local SLIDE = 26
+
+            -- ปิดแท็บอื่นแบบนุ่มนวล
+            for _, t in ipairs(Window.Tabs) do
+                if t.Content ~= TabContent then
+                    TweenService:Create(t.Button, TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+                        TextColor3 = Color3.fromRGB(140, 40, 40)
+                    }):Play()
+                    TweenService:Create(t.Underline, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+                        BackgroundTransparency = 1
+                    }):Play()
+
+                    if t.Group.Visible then
+                        local g = t.Group
+                        local out = TweenService:Create(g, TweenInfo.new(0.28, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+                            GroupTransparency = 1,
+                            Position = UDim2.new(0, -SLIDE, 0, 0)
+                        })
+                        out.Completed:Connect(function()
+                            if Window.ActiveTab ~= t then
+                                g.Visible = false
+                            end
+                        end)
+                        out:Play()
+                    end
+                end
+            end
+
+            -- ไฮไลต์แท็บที่เลือก
+            TweenService:Create(TabBtn, TweenInfo.new(0.4, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+                TextColor3 = Color3.fromRGB(255, 43, 43)
+            }):Play()
+
+            Underline.Visible = true
+            Underline.BackgroundTransparency = 1
+            Underline.Size = UDim2.new(0, 0, 0, 2)
+            TweenService:Create(Underline, TweenInfo.new(0.45, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
+                BackgroundTransparency = 0,
+                Size = UDim2.new(1, 0, 0, 2)
+            }):Play()
+
+            -- เลื่อนเข้า + เฟด Content แบบพรีเมี่ยม
+            TabGroup.Visible = true
+            TabGroup.GroupTransparency = 1
+            TabGroup.Position = UDim2.new(0, SLIDE, 0, 0)
+            TweenService:Create(TabGroup, TweenInfo.new(0.5, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
+                GroupTransparency = 0,
+                Position = UDim2.new(0, 0, 0, 0)
+            }):Play()
         end
 
         TabBtn.MouseButton1Click:Connect(Select)
-        table.insert(Window.Tabs, {Button = TabBtn, Underline = Underline, Content = TabContent})
+        table.insert(Window.Tabs, {Button = TabBtn, Underline = Underline, Content = TabContent, Group = TabGroup})
 
         if #Window.Tabs == 1 then
             Select()
